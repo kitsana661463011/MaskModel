@@ -1,17 +1,49 @@
+// index.js
+const express = require('express');
+const line = require('@line/bot-sdk');
+const tf = require('@tensorflow/tfjs-node');
+
+const config = {
+    channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
+    channelSecret: process.env.CHANNEL_SECRET,
+};
+
+const modelUrl = 'https://teachablemachine.withgoogle.com/models/AFn6FL5Uf/model.json';
+const classNames = ['with_mask', 'without_mask'];
+
+const app = express();
+const client = new line.Client(config);
+
+let model;
+
+// ==================== Webhook ====================
+app.post('/webhook', line.middleware(config), (req, res) => {
+    Promise.all(req.body.events.map(handleEvent))
+        .then((result) => res.json(result))
+        .catch((err) => {
+            console.error(err);
+            res.status(500).end();
+        });
+});
+
+// ==================== Handle Event ====================
 async function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'image') {
         return Promise.resolve(null);
     }
+
     try {
         const imageBuffer = await getImageBufferFromLine(event.message.id);
 
+        // ==================== Preprocess Image ====================
         const imageTensor = tf.node.decodeImage(imageBuffer, 3)
             .resizeNearestNeighbor([224, 224])
             .toFloat()
-            .div(tf.scalar(127.5))
+            .div(tf.scalar(127.5))  // ปรับค่าสี
             .sub(tf.scalar(1))
             .expandDims();
 
+        // ==================== Predict ====================
         const predictionResult = await model.predict(imageTensor).data();
 
         let bestPrediction = { className: 'ไม่รู้จัก', probability: 0 };
@@ -24,7 +56,7 @@ async function handleEvent(event) {
 
         const confidence = Math.round(bestPrediction.probability * 100);
 
-        // ======= Flex Message =======
+        // ==================== Flex Message ====================
         const flexMessage = {
             type: 'flex',
             altText: 'ผลการทำนาย',
@@ -45,13 +77,6 @@ async function handleEvent(event) {
                     backgroundColor: '#4CAF50',
                     paddingAll: '10px'
                 },
-                hero: {
-                    type: 'image',
-                    url: `https://example.com/your-preview-image.png`, // ใส่ภาพตัวอย่างหรือภาพผู้ใช้
-                    size: 'full',
-                    aspectRatio: '20:13',
-                    aspectMode: 'cover'
-                },
                 body: {
                     type: 'box',
                     layout: 'vertical',
@@ -65,17 +90,10 @@ async function handleEvent(event) {
                             wrap: true
                         },
                         {
-                            type: 'box',
-                            layout: 'baseline',
-                            contents: [
-                                {
-                                    type: 'text',
-                                    text: `ความแม่นยำ: ${confidence}%`,
-                                    size: 'sm',
-                                    color: '#666666',
-                                    flex: 0
-                                }
-                            ]
+                            type: 'text',
+                            text: `ความแม่นยำ: ${confidence}%`,
+                            size: 'sm',
+                            color: '#666666'
                         },
                         {
                             type: 'box',
@@ -96,6 +114,7 @@ async function handleEvent(event) {
         };
 
         return client.replyMessage(event.replyToken, flexMessage);
+
     } catch (error) {
         console.error(error);
         return client.replyMessage(event.replyToken, {
@@ -104,3 +123,35 @@ async function handleEvent(event) {
         });
     }
 }
+
+// ==================== Get Image Buffer ====================
+function getImageBufferFromLine(messageId) {
+    return new Promise((resolve, reject) => {
+        client.getMessageContent(messageId)
+            .then((stream) => {
+                const chunks = [];
+                stream.on('data', (chunk) => { chunks.push(chunk); });
+                stream.on('error', (err) => { reject(err); });
+                stream.on('end', () => { resolve(Buffer.concat(chunks)); });
+            });
+    });
+}
+
+// ==================== Start Server ====================
+async function startServer() {
+    try {
+        console.log('Loading model...');
+        model = await tf.loadLayersModel(modelUrl);
+        console.log('Model loaded!');
+
+        const port = process.env.PORT || 3000;
+        app.listen(port, () => {
+            console.log(`Bot is ready on port ${port}`);
+        });
+
+    } catch (error) {
+        console.error('Failed to load model:', error);
+    }
+}
+
+startServer();
