@@ -1,27 +1,3 @@
-const express = require('express');
-const line = require('@line/bot-sdk');
-const tf = require('@tensorflow/tfjs-node');
-
-const config = {
-    channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
-    channelSecret: process.env.CHANNEL_SECRET,
-};
-const modelUrl = 'https://teachablemachine.withgoogle.com/models/AFn6FL5Uf/model.json';
-const classNames = ['with_mask', 'without_mask'];
-
-const app = express();
-const client = new line.Client(config);
-let model;
-
-app.post('/webhook', line.middleware(config), (req, res) => {
-    Promise.all(req.body.events.map(handleEvent))
-        .then((result) => res.json(result))
-        .catch((err) => {
-            console.error(err);
-            res.status(500).end();
-        });
-});
-
 async function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'image') {
         return Promise.resolve(null);
@@ -29,23 +5,12 @@ async function handleEvent(event) {
     try {
         const imageBuffer = await getImageBufferFromLine(event.message.id);
 
-        // ===============================================================
-        // ▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼▼
-        //                  >>> จุดที่แก้ไข <<<
-        //       เพิ่ม .div(tf.scalar(127.5)).sub(tf.scalar(1))
-        //   เพื่อปรับค่าสีของรูปภาพให้เหมือนกับตอนที่เทรนโมเดล
-        // ===============================================================
-
         const imageTensor = tf.node.decodeImage(imageBuffer, 3)
             .resizeNearestNeighbor([224, 224])
             .toFloat()
-            .div(tf.scalar(127.5)) // <-- เพิ่มบรรทัดนี้
-            .sub(tf.scalar(1))     // <-- และบรรทัดนี้
+            .div(tf.scalar(127.5))
+            .sub(tf.scalar(1))
             .expandDims();
-
-        // ===============================================================
-        // ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
-        // ===============================================================
 
         const predictionResult = await model.predict(imageTensor).data();
 
@@ -58,39 +23,84 @@ async function handleEvent(event) {
         }
 
         const confidence = Math.round(bestPrediction.probability * 100);
-        const replyText = `ฉันคิดว่ารูปนี้คือ "${bestPrediction.className}" นะ! (ความแม่นยำ ${confidence}%)`;
 
-        return client.replyMessage(event.replyToken, { type: 'text', text: replyText });
+        // ======= Flex Message =======
+        const flexMessage = {
+            type: 'flex',
+            altText: 'ผลการทำนาย',
+            contents: {
+                type: 'bubble',
+                header: {
+                    type: 'box',
+                    layout: 'vertical',
+                    contents: [
+                        {
+                            type: 'text',
+                            text: 'ผลการทำนายหน้ากาก',
+                            weight: 'bold',
+                            color: '#ffffff',
+                            size: 'lg'
+                        }
+                    ],
+                    backgroundColor: '#4CAF50',
+                    paddingAll: '10px'
+                },
+                hero: {
+                    type: 'image',
+                    url: `https://example.com/your-preview-image.png`, // ใส่ภาพตัวอย่างหรือภาพผู้ใช้
+                    size: 'full',
+                    aspectRatio: '20:13',
+                    aspectMode: 'cover'
+                },
+                body: {
+                    type: 'box',
+                    layout: 'vertical',
+                    spacing: 'md',
+                    contents: [
+                        {
+                            type: 'text',
+                            text: `ฉันคิดว่ารูปนี้คือ: ${bestPrediction.className}`,
+                            weight: 'bold',
+                            size: 'md',
+                            wrap: true
+                        },
+                        {
+                            type: 'box',
+                            layout: 'baseline',
+                            contents: [
+                                {
+                                    type: 'text',
+                                    text: `ความแม่นยำ: ${confidence}%`,
+                                    size: 'sm',
+                                    color: '#666666',
+                                    flex: 0
+                                }
+                            ]
+                        },
+                        {
+                            type: 'box',
+                            layout: 'vertical',
+                            margin: 'md',
+                            contents: [
+                                {
+                                    type: 'filler',
+                                    flex: confidence
+                                }
+                            ],
+                            backgroundColor: '#D3D3D3',
+                            height: '10px'
+                        }
+                    ]
+                }
+            }
+        };
+
+        return client.replyMessage(event.replyToken, flexMessage);
     } catch (error) {
         console.error(error);
-        return client.replyMessage(event.replyToken, { type: 'text', text: 'ขออภัยค่ะ เกิดข้อผิดพลาดบางอย่าง' });
-    }
-}
-
-function getImageBufferFromLine(messageId) {
-    return new Promise((resolve, reject) => {
-        client.getMessageContent(messageId)
-            .then((stream) => {
-                const chunks = [];
-                stream.on('data', (chunk) => { chunks.push(chunk); });
-                stream.on('error', (err) => { reject(err); });
-                stream.on('end', () => { resolve(Buffer.concat(chunks)); });
-            });
-    });
-}
-
-async function startServer() {
-    try {
-        console.log('Loading model...');
-        model = await tf.loadLayersModel(modelUrl);
-        console.log('Model loaded!');
-        const port = process.env.PORT || 3000;
-        app.listen(port, () => {
-            console.log(`Bot is ready on port ${port}`);
+        return client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: 'ขออภัยค่ะ เกิดข้อผิดพลาดบางอย่าง'
         });
-    } catch (error) {
-        console.error('Failed to load model:', error);
     }
 }
-
-startServer();
